@@ -19,7 +19,7 @@ library(RWeka)
 library(igraph)
 
 #RETRIEVE TWITTER DATA
-twitter_feed <- searchTwitter('nyustern', n=500) #Replace 'nyustern' with your own term to search. Change the number to determine how many tweets you would like
+twitter_feed <- searchTwitter('ucla', n=5000) #Replace 'ucla' with your own term to search. Change the number to determine how many tweets you would like
 df <- do.call("rbind", lapply(twitter_feed, as.data.frame))
 
 #CORPUS CREATION - DTM PREP
@@ -46,10 +46,10 @@ myNames = names(v)
 k = which(names(v)=="miners")
 myNames[k] = "mining"
 d = data.frame(word=myNames, freq=v)
-wordcloud(d$word, colors=c(1,2,4),random.color=TRUE,d$freq, min.freq=555) #decrease/increase min.freq to increase/decrease words shown 
+wordcloud(d$word, colors=c(1,2,4),random.color=TRUE,d$freq, min.freq=135) #decrease/increase min.freq to increase/decrease words shown 
 
 #LATENT DIRICHLET ALLOCATION
-k = 25 #Number of clusters
+k = 10 #Number of clusters
 SEED = 12345 # set seed to allocate resources for the Mixture Model
 my_TM =
   list(VEM = LDA(myDtm, k = k, control = list(seed = SEED)),
@@ -112,3 +112,52 @@ polarity <- rapply(polarity, f=function(x) ifelse(is.nan(x),0,x), how="replace" 
 final_results <- cbind(topic,polarity,df)
 View(final_results)
 write.csv(final_results,file="Topic_Pol_score_on_Twitter_data.csv", row.names=FALSE)
+
+#MAPS THE SENTIMENT IN THE COUNTIES OF THE US (IF DATA IS AVAILABLE)
+completeFun <- function(data, desiredCols) {
+  completeVec <- complete.cases(data[, desiredCols])
+  return(data[completeVec, ])
+}
+
+interim_results <- completeFun(final_results, ncol(final_results))
+
+library(sp)
+library(maps)
+library(maptools)
+
+latlong2county <- function(pointsDF) {
+  # Prepare SpatialPolygons object with one SpatialPolygon
+  # per county
+  counties <- map('county', fill=TRUE, col="transparent", plot=FALSE)
+  IDs <- sapply(strsplit(counties$names, ":"), function(x) x[1])
+  counties_sp <- map2SpatialPolygons(counties, IDs=IDs,
+                                     proj4string=CRS("+proj=longlat +datum=wgs84"))  
+  # Convert pointsDF to a SpatialPoints object 
+  pointsSP <- SpatialPoints(pointsDF, 
+                            proj4string=CRS("+proj=longlat +datum=wgs84"))  
+  # Use 'over' to get _indices_ of the Polygons object containing each point 
+  indices <- over(pointsSP, counties_sp)  
+  # Return the county names of the Polygons object containing each point
+  countyNames <- sapply(counties_sp@polygons, function(x) x@ID)
+  countyNames[indices]
+}
+testPoints <- as.data.frame(interim_results[,((ncol(interim_results)-1):ncol(interim_results))])
+testPoints$longitude <- as.numeric(testPoints$longitude)
+testPoints$latitude <- as.numeric(testPoints$latitude)
+
+polyname <- latlong2county(testPoints)
+results_to_map <- (cbind(interim_results,polyname))
+results_to_map <- as.data.frame(results_to_map)
+results_to_map <- completeFun(results_to_map, ncol(results_to_map))
+data(county.fips)
+map_data <- merge(results_to_map,county.fips,by="polyname")
+colors = c("#F1EEF6", "#D4B9DA", "#C994C7", "#DF65B0", "#DD1C77", "#980043")
+map_data$colorBuckets <- as.numeric(cut(map_data$polarity, c(-10, -0.667, -0.333, 0, 0.333, 0.666, 10)))
+leg.txt <- c("<= (0.67%)", "(0.67) - (0.33%)", "(0.33%) - 0%", "0% - 0.33%", "0.33% - 0.67%", ">=0.67%")
+cnty.fips <- county.fips$fips[match(map("county", plot=FALSE)$names,county.fips$polyname)]
+colorsmatched <- map_data$colorBuckets [match(cnty.fips, map_data$fips)]
+colorsmatched[is.na(colorsmatched)] <- 0
+map("county", col = colors[colorsmatched], fill = TRUE, resolution = 0, lty = 0, projection = "polyconic")
+map("state", col = "white", fill = FALSE, add = TRUE, lty = 1, lwd = 0.2, projection="polyconic")
+title("Sentiment Scores by county")
+legend("right", leg.txt, horiz = FALSE, cex=.4, pch=-3, pt.cex = .4,fill = colors)
